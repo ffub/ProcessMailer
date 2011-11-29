@@ -1,0 +1,268 @@
+<?php
+
+/**
+ * Very simple in-built Mailer that allows you to send mail to groups (based on roles)
+ *
+ * Copyright (C) 2011 by Stephen Tomlinson 
+ *
+ */
+ 
+class ProcessMailer extends Process implements ConfigurableModule {
+
+
+	/* 
+	 *	Module basics 
+	 *
+	 */
+	
+	public static function getModuleInfo() {
+	  return array(
+	    'title' => 'ProcessMailer',
+	    'summary' => 'Very basic emailer program',
+	    'version' => 001,
+	   );
+	}
+	
+	const adminPageName = 'mailer'; // Name of the admin page
+	
+	
+	/*
+	 *	Default configuration for module
+	 *
+	 */
+	protected static $defaultConfigData = array(
+		'defaultRole' => false,
+		'templateFile'	=> false,
+	);
+	
+	
+	/*
+	 *	Populate the default config data
+	 *
+	 */
+	public function __construct() {
+	   foreach(self::$defaultConfigData as $key => $value) {
+		   $this->$key = $value;
+		   $data[$key] = $value;
+	   }
+	}
+	
+	
+	/*
+	 *	Send email page
+	 *
+	 */
+	public function execute() {
+	
+		$form = $this->getEmailForm();
+		$input = $this->input;
+		
+		// If no results, display a blank form
+		if(!$input->post->submit_email) return $form->render();
+		
+		$form->processInput($input->post); 
+		
+		if(count($form->getErrors())) return $form->render();
+			
+		// Run a test transmission
+		if($input->post->test) {
+		
+			$this->sendHtmlMail($form->get('test')->value,$form->get('subject')->value,$form->get('body')->value);
+			$form->remove("test");
+			$this->message("Test transmission send to: {$form->get('test')->value}");
+			return $form->render();
+		
+		}
+	
+		// Run a normal transmission
+		$role = $form->get('role')->value;
+		$users = $this->users->find("roles=$role");
+		
+		$log = "";
+		foreach($users as $user) {
+			$this->sendHtmlMail($user->email,$form->get('subject')->value,$form->get('body')->value);
+			$log .= "Sent to {$user->name} {$user->email}<br/>";
+		}
+		return $log;
+		
+	}
+	
+	
+	/*
+	 *	Function to send actual email
+	 *
+	 */
+	public function ___sendHtmlMail($to,$subject,$body,$from) {
+	
+		// Body text
+		$text = "<html><body>";
+		$text .= $body;
+		$text .= "</body></html>";
+		
+		// If we have specified a template file, use that
+		if($this->templateFile)
+			$text = $this->getTemplate($this->templateFile,$subject,$body);
+		
+		// Headers
+		$fromName = $this->pages->get("/")->get("headline");
+		$from = $this->config->adminEmail;
+		
+		$headers =  "From: $fromName <$from>" . PHP_EOL;  
+		$headers .= "MIME-Version: 1.0" . PHP_EOL; 
+		$headers .= "Content-type: text/html; charset=utf-8" . PHP_EOL;
+		$headers .= "Content-Transfer-Encoding: 8bit";
+			
+		// Send the email
+		return mail(
+			$to,
+			$subject,
+			wordwrap($text, 900),
+			$headers
+		);
+		
+	}
+	
+	
+	/*
+	 *	Get the HTML template
+	 *
+	 */
+	public function getTemplate($template, $subject,$body) {
+	
+		$out = new TemplateFile($this->config->paths->templates . $template); 
+		$out->set('subject', $subject);
+		$out->set('body', $body);
+		$out->set('page',$page);
+		return $out->render();
+		
+	}
+	
+	
+	/*
+	 *	Email form
+	 *
+	 */
+	protected function getEmailForm() {
+	
+		$form = $this->modules->get("InputfieldForm"); 
+		$form->method = 'post';		
+		$form->description = "Send an email to the membership";
+		
+		$modules = wire('modules');
+		
+		$roles = $this->pages->find('template=role');
+		
+		$f = $modules->get('InputfieldSelect');
+		$f->name = 'role';
+		$f->label = "Role";
+		$f->description = "The user group to send the email to";
+		$f->required = true;
+		foreach(wire('pages')->find("template=role") as $role) {
+			if($role->name == "guest") continue;
+			$f->addOption($role->id, $role->name);
+			if($role->name == $this->defaultRole) $f->value = $role;
+		}
+		$form->add($f);
+
+		$f = $modules->get('InputfieldText');
+		$f->name = 'subject';
+		$f->label = "Subject";
+		$f->required = true;
+		$form->add($f);
+		
+		$f = $modules->get('InputfieldTinyMCE');
+		$f->name = 'body';
+		$f->label = "Body";
+		$f->description = "The enter key will move to a new paragraph. To break to a new line, press Shift+Enter";
+		$f->required = true;
+		$f->theme_advanced_buttons1 = "formatselect,|,bold,italic,|,bullist,numlist,|,link,unlink,|,code,|,fullscreen";
+		$f->rows = 30;
+		$form->add($f);
+		
+		$f = $modules->get('InputfieldEmail');
+		$f->name = 'test';
+		$f->label = "Send a test";
+		$f->description = "Enter an email address to send a test transmission to. If this field is set the email will only be sent to this address";
+		$f->required = false;
+		$f->collapsed = Inputfield::collapsedBlank;
+		$form->add($f);
+		
+		$f = $this->modules->get("InputfieldSubmit"); 
+		$f->name = 'submit_email';
+		$f->value = "Send now"; 
+		$form->add($f); 
+
+		return $form;
+	
+	}
+	
+	
+	/*
+	 *	Install
+	 *
+	 */
+	public function ___install() {
+	
+		$admin = $this->pages->get($this->config->adminRootPageID);
+			
+		$page = new Page();
+		$page->parent = $admin; 
+		$page->template = $this->templates->get('admin');
+		$page->name = self::adminPageName; 
+		$page->title = "Mailer";
+		$page->process = $this; 
+		$page->sort = $parent->numChildren;
+		$page->save();
+	
+	}
+	
+	
+	/*
+	 *	Uninstall
+	 *
+	 */
+	public function ___uninstall() {
+		
+		$admin = $this->pages->get($this->config->adminRootPageID);
+		$page = $admin->child("name=" . self::adminPageName);
+		
+		if($page->id) { 
+			$this->message("Removed {$page->path}");
+			$this->pages->delete($page); 
+		}
+	}
+	
+	
+	/*
+	 *	Store details in the backend
+	 *
+	 */
+	static public function getModuleConfigInputfields(array $data) {
+
+		$inputfields = new InputfieldWrapper();
+		
+		$data = array_merge(self::$defaultConfigData, $data);
+		
+		$modules = wire('modules');
+
+		$f = $modules->get('InputfieldText');
+		$f->name = 'defaultRole';
+		$f->label = "Default role";
+		$f->description = "Default role to send emails to";
+		$f->attr('value', $data[$f->name]);
+		$inputfields->add($f);
+		
+		$f = $modules->get('InputfieldText');
+		$f->name = 'templateFile';
+		$f->label = "Template file";
+		$f->description = 'A file to use as an email template. The fields $body and $subject are available';
+		$f->attr('value', $data[$f->name]);
+		$inputfields->add($f);
+
+		return $inputfields;
+
+	}
+
+    
+    
+}
